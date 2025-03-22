@@ -49,14 +49,14 @@ def main():
     print(f"Dataset length: {len(text)} characters")
     
     # init config and model
-    config = GPTConfig()  # will use 'medium' by default now
+    config = GPTConfig(model_type='small')  # use 'small' instead of 'medium'
     config.vocab_size = tokenizer.n_vocab
     model = GPT(config)
     
     # prepare the data
     train_dataset = TextDataset(text, config.block_size, tokenizer)
     print(f"Model configuration:")
-    print(f"- Model type: medium (350M parameters)")
+    print(f"- Model type: small (124M parameters)")
     print(f"- Vocab size: {config.vocab_size}")
     print(f"- Block size: {config.block_size}")
     print(f"- Number of parameters: {sum(p.numel() for p in model.parameters())/1e6:.2f}M")
@@ -96,7 +96,11 @@ def main():
     last_tokens = 0
     
     # Set up automatic mixed precision (bfloat16)
-    scaler = torch.cuda.amp.GradScaler() if device == 'cuda' and config.use_bfloat16 else None
+    # Use torch.amp.autocast directly instead of deprecated GradScaler
+    amp_enabled = (device == 'cuda' and config.use_bfloat16)
+    amp_dtype = torch.bfloat16 if amp_enabled else torch.float32
+    # No scaler when using autocast directly
+    scaler = None
     
     model.train()
     while True:
@@ -106,16 +110,14 @@ def main():
         x = torch.stack(x).to(device)
         y = torch.stack(y).to(device)
         
-        # forward pass with mixed precision
-        if scaler is not None:
-            with torch.autocast(device_type=device, dtype=torch.bfloat16):
+        # forward pass with mixed precision if enabled
+        if amp_enabled:
+            with torch.autocast(device_type=device, dtype=amp_dtype):
                 logits, loss = model(x, y)
-            # backward pass with gradient scaling
-            scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
+            # regular backward pass without scaler
+            loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
-            scaler.step(optimizer)
-            scaler.update()
+            optimizer.step()
         else:
             # regular forward and backward pass
             logits, loss = model(x, y)
@@ -144,7 +146,7 @@ def main():
                 print(f"\nSample at {tokens} tokens:")
                 print("-"*40)
                 for _ in range(100):
-                    with torch.autocast(device_type=device, dtype=torch.bfloat16) if config.use_bfloat16 else torch.no_grad():
+                    with torch.autocast(device_type=device, dtype=amp_dtype) if amp_enabled else torch.no_grad():
                         logits, _ = model(context)
                     probs = torch.softmax(logits[:, -1, :], dim=-1)
                     next_token = torch.multinomial(probs, num_samples=1)

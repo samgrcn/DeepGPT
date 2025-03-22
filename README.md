@@ -1,6 +1,6 @@
 # Efficient GPT-2 Implementation
 
-An efficient implementation of GPT-2 in PyTorch with modern optimizations:
+An efficient GPT-2 implementation for training in PyTorch with modern optimizations:
 - Flash Attention support
 - Mixed precision training (bfloat16)
 - torch.compile support
@@ -51,7 +51,7 @@ Model and training parameters can be configured in `config.py`:
 ## Training on Cloud GPUs
 
 The code is optimized for GPU training and includes support for:
-- Lambda Labs
+- Cloud GPU
 - Any PyTorch-compatible GPU
 - Multi-GPU training (coming soon)
 

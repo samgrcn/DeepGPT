@@ -45,7 +45,7 @@ def generate(model, tokenizer, prompt="", max_tokens=150, temperature=0.9):
 def main():
     # Initialize tokenizer and model with the same config as training
     tokenizer = tiktoken.get_encoding("gpt2")
-    config = GPTConfig()  # will use 'small' by default
+    config = GPTConfig()  # small by default
     config.vocab_size = tokenizer.n_vocab
     model = GPT(config)
     
@@ -53,7 +53,7 @@ def main():
     print(f"Model size: {sum(p.numel() for p in model.parameters())/1e6:.2f}M parameters")
     model.load_state_dict(torch.load('best_model.pt'))
     
-    # Shakespeare-style prompts
+    # Prompts of Shakespeare
     prompts = [
         "HAMLET: To be, or not to be, that is",
         "JULIET: O Romeo, Romeo! wherefore art",
