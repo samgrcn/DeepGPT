@@ -47,16 +47,28 @@ def generate(model, tokenizer, prompt="", max_tokens=150, temperature=0.9):
 def main():
     # Initialize tokenizer and model with the same config as training
     tokenizer = tiktoken.get_encoding("gpt2")
-    config = GPTConfig()  # small by default
+    config = GPTConfig(model_type='small')  # small by default
     config.vocab_size = tokenizer.n_vocab
     model = GPT(config)
+    
+    model = model.to(device)
     
     if config.use_compile and device == 'cuda':
         model = torch.compile(model)
     
     print("Loading model...")
     print(f"Model size: {sum(p.numel() for p in model.parameters())/1e6:.2f}M parameters")
-    model.load_state_dict(torch.load('best_model.pt'))
+    
+    # Load the model weights
+    try:
+        model.load_state_dict(torch.load('best_model.pt', map_location=device))
+        print("Model loaded successfully")
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        # Try loading with strict=False
+        print("Attempting to load with strict=False...")
+        model.load_state_dict(torch.load('best_model.pt', map_location=device), strict=False)
+        print("Model loaded with strict=False")
     
     # Prompts of Shakespeare
     prompts = [
