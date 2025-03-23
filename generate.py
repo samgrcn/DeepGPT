@@ -3,6 +3,8 @@ import tiktoken
 from model import GPT
 from config import GPTConfig
 
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
 def generate(model, tokenizer, prompt="", max_tokens=150, temperature=0.9):
     model.eval()
     block_size = model.config.block_size
