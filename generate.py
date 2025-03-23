@@ -8,15 +8,16 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 def generate(model, tokenizer, prompt="", max_tokens=150, temperature=0.9):
     model.eval()
     block_size = model.config.block_size
+    device = next(model.parameters()).device  # Get model's device
     
     # Encode the prompt
     if prompt:
-        context = torch.tensor(tokenizer.encode(prompt), dtype=torch.long).unsqueeze(0)
+        context = torch.tensor(tokenizer.encode(prompt), dtype=torch.long).unsqueeze(0).to(device)
         # Truncate if prompt is too long
         if context.size(1) > block_size:
             context = context[:, -block_size:]
     else:
-        context = torch.zeros((1, 1), dtype=torch.long)
+        context = torch.zeros((1, 1), dtype=torch.long, device=device)
     
     # Generate tokens
     print("\nGenerating with prompt:", prompt if prompt else "(no prompt)")
@@ -49,26 +50,35 @@ def main():
     tokenizer = tiktoken.get_encoding("gpt2")
     config = GPTConfig(model_type='small')  # small by default
     config.vocab_size = tokenizer.n_vocab
+    # Disable compilation to avoid issues
+    config.use_compile = False
     model = GPT(config)
     
     model = model.to(device)
     
-    if config.use_compile and device == 'cuda':
-        model = torch.compile(model)
-    
     print("Loading model...")
     print(f"Model size: {sum(p.numel() for p in model.parameters())/1e6:.2f}M parameters")
     
-    # Load the model weights
+    # Load the model weights with state dict fixing
     try:
-        model.load_state_dict(torch.load('best_model.pt', map_location=device))
-        print("Model loaded successfully")
+        # Load state dict and fix keys if needed
+        state_dict = torch.load('best_model.pt', map_location=device)
+        # Remove _orig_mod prefix if it exists (from torch.compile)
+        fixed_state_dict = {}
+        for k, v in state_dict.items():
+            fixed_state_dict[k.replace('_orig_mod.', '')] = v
+        
+        model.load_state_dict(fixed_state_dict, strict=False)
+        print("Model loaded successfully with fixed state dict")
     except Exception as e:
         print(f"Error loading model: {e}")
-        # Try loading with strict=False
-        print("Attempting to load with strict=False...")
-        model.load_state_dict(torch.load('best_model.pt', map_location=device), strict=False)
-        print("Model loaded with strict=False")
+        # Fallback to strict=False
+        try:
+            model.load_state_dict(torch.load('best_model.pt', map_location=device), strict=False)
+            print("Model loaded with strict=False")
+        except Exception as e:
+            print(f"Failed to load model: {e}")
+            return
     
     # Prompts of Shakespeare
     prompts = [
