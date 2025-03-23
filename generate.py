@@ -49,6 +49,9 @@ def main():
     config.vocab_size = tokenizer.n_vocab
     model = GPT(config)
     
+    if config.use_compile and device == 'cuda':
+        model = torch.compile(model)
+    
     print("Loading model...")
     print(f"Model size: {sum(p.numel() for p in model.parameters())/1e6:.2f}M parameters")
     model.load_state_dict(torch.load('best_model.pt'))
