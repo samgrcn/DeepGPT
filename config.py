@@ -23,6 +23,10 @@ class GPTConfig:
         self.use_latent_attention = True  # Enable latent attention by default
         self.latent_size = 64  # Default latent dimension (adjust based on model size)
         
+        # Rotary Position Embeddings (RoPE)
+        self.use_rope = True  # Enable RoPE by default
+        self.rope_theta = 10000.0  # Default base frequency
+        
         # Define model configs based on model size
         if model_type == 'tiny':
             self.n_layer = 6

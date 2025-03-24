@@ -1,6 +1,6 @@
 # Efficient GPT-2 Implementation
 
-An efficient GPT-2 implementation for training in PyTorch with modern optimizations:
+An efficient implementation of GPT-2 in PyTorch with modern optimizations:
 - Flash Attention support
 - Mixed precision training (bfloat16)
 - torch.compile support
@@ -15,6 +15,26 @@ An efficient GPT-2 implementation for training in PyTorch with modern optimizati
   - Medium (350M parameters) - GPT-2 medium
   - Large (800M parameters) - Custom size
   - XL (1.5B parameters) - Custom size
+
+## Optimizations
+
+This implementation includes several advanced optimizations from the DeepSeek paper to improve both efficiency and performance:
+
+### Multi-Head Latent Attention
+- Reduces quadratic attention complexity to linear scaling
+- Projects queries to a small, learnable latent space
+- Significantly reduces memory usage and computational requirements
+- Enables longer context windows with minimal performance impact
+- Configurable latent dimension that scales with model size
+
+### Rotary Position Embeddings (RoPE)
+- Replaces traditional position embeddings with rotary embeddings
+- Encodes position information directly in the attention computation
+- Improves model's ability to generalize to longer sequences
+- Better handles relative positions between tokens
+- More efficient implementation with fewer parameters
+
+These optimizations are enabled by default and can be configured in `config.py`.
 
 ## Requirements
 

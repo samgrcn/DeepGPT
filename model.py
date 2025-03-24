@@ -3,6 +3,36 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+# Rotary Position Embeddings implementation
+def precompute_freqs_cis(dim, end, theta=10000.0):
+    """
+    Precomputes the frequency tensor for complex exponentials (cosine and sine)
+    with given dimension and maximum sequence length.
+    """
+    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
+    t = torch.arange(end, device=freqs.device)
+    freqs = torch.outer(t, freqs)
+    freqs_cis = torch.polar(torch.ones_like(freqs), freqs)  # complex64
+    return freqs_cis
+
+def apply_rotary_emb(xq, xk, freqs_cis):
+    """
+    Applies rotary embeddings to the query and key tensors.
+    """
+    xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
+    xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
+    
+    # Reshape freqs_cis to match xq_
+    freqs_cis = freqs_cis.unsqueeze(0).unsqueeze(0)
+    if xq_.dim() == 4:  # (B, nh, T, D//2)
+        freqs_cis = freqs_cis.unsqueeze(1)
+    
+    # Apply rotation
+    xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(-2)
+    xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(-2)
+    
+    return xq_out.type_as(xq), xk_out.type_as(xk)
+
 class CausalSelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -21,12 +51,24 @@ class CausalSelfAttention(nn.Module):
         self.n_embd = config.n_embd
         self.drop_p = config.dropout
         
-        # flash attention flag
+        # flash attention optimization flag
         self.use_flash_attention = config.use_flash_attention
         
-        # Multi-head latent attention
+        # Multi-head latent attention (DeepSeek-style optimization)
         self.use_latent_attention = getattr(config, 'use_latent_attention', False)
         self.latent_size = getattr(config, 'latent_size', 64)  # Default latent size
+        
+        # Rotary Position Embeddings (RoPE)
+        self.use_rope = getattr(config, 'use_rope', False)
+        if self.use_rope:
+            self.rope_theta = getattr(config, 'rope_theta', 10000.0)
+            self.max_seq_len = config.block_size
+            self.head_dim = self.n_embd // self.n_head
+            # Precompute rotary embeddings
+            self.register_buffer(
+                "rope_freqs", 
+                precompute_freqs_cis(self.head_dim, self.max_seq_len, self.rope_theta)
+            )
         
         if self.use_latent_attention:
             # Latent projections for keys and values
@@ -48,6 +90,13 @@ class CausalSelfAttention(nn.Module):
         k = k.view(B, T, self.n_head, head_dim).transpose(1, 2)  # (B, nh, T, hs)
         q = q.view(B, T, self.n_head, head_dim).transpose(1, 2)  # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, head_dim).transpose(1, 2)  # (B, nh, T, hs)
+        
+        # Apply rotary position embeddings if enabled
+        if self.use_rope:
+            # Get the current subset of the precomputed freqs
+            freqs_cis = self.rope_freqs[:T]
+            # Apply rotary embeddings
+            q, k = apply_rotary_emb(q, k, freqs_cis)
 
         if self.use_flash_attention and hasattr(F, 'scaled_dot_product_attention'):
             # flash attention - much more memory efficient
@@ -118,11 +167,16 @@ class GPT(nn.Module):
         
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
-            wpe = nn.Embedding(config.block_size, config.n_embd),
             drop = nn.Dropout(config.dropout),
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             ln_f = nn.LayerNorm(config.n_embd),
         ))
+        
+        # Use traditional PE if no RoPE
+        self.use_rope = getattr(config, 'use_rope', False)
+        if not self.use_rope:
+            self.transformer.wpe = nn.Embedding(config.block_size, config.n_embd)
+        
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         
         # weight tying
@@ -153,12 +207,18 @@ class GPT(nn.Module):
         device = idx.device
         b, t = idx.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
-        pos = torch.arange(0, t, dtype=torch.long, device=device)
-
+        
         # forward the GPT model itself
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
-        pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
-        x = self.transformer.drop(tok_emb + pos_emb)
+        
+        # Add positional embeddings if not using RoPE (which handles positions internally)
+        if not self.use_rope:
+            pos = torch.arange(0, t, dtype=torch.long, device=device)
+            pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
+            x = self.transformer.drop(tok_emb + pos_emb)
+        else:
+            x = self.transformer.drop(tok_emb)
+
         for block in self.transformer.h:
             x = block(x)
         x = self.transformer.ln_f(x)
