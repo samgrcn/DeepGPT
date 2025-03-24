@@ -9,16 +9,33 @@ class CausalSelfAttention(nn.Module):
         assert config.n_embd % config.n_head == 0
         # key, query, value projections for all heads, but in a batch
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
+        
         # output projection
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)
+        
         # regularization
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
+        
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.drop_p = config.dropout
-        # flash attention optimization flag
+        
+        # flash attention flag
         self.use_flash_attention = config.use_flash_attention
+        
+        # Multi-head latent attention
+        self.use_latent_attention = getattr(config, 'use_latent_attention', False)
+        self.latent_size = getattr(config, 'latent_size', 64)  # Default latent size
+        
+        if self.use_latent_attention:
+            # Latent projections for keys and values
+            head_dim = self.n_embd // self.n_head
+            self.latent_k = nn.Parameter(torch.empty(self.n_head, self.latent_size, head_dim))
+            self.latent_v = nn.Parameter(torch.empty(self.n_head, self.latent_size, head_dim))
+            # Initialize latent parameters
+            nn.init.normal_(self.latent_k, mean=0.0, std=0.02)
+            nn.init.normal_(self.latent_v, mean=0.0, std=0.02)
         
     def forward(self, x):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
@@ -27,13 +44,30 @@ class CausalSelfAttention(nn.Module):
         q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
         
         # move head forward to be the batch dim
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+        head_dim = C // self.n_head
+        k = k.view(B, T, self.n_head, head_dim).transpose(1, 2)  # (B, nh, T, hs)
+        q = q.view(B, T, self.n_head, head_dim).transpose(1, 2)  # (B, nh, T, hs)
+        v = v.view(B, T, self.n_head, head_dim).transpose(1, 2)  # (B, nh, T, hs)
 
         if self.use_flash_attention and hasattr(F, 'scaled_dot_product_attention'):
             # flash attention - much more memory efficient
             y = F.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.drop_p if self.training else 0, is_causal=True)
+        elif self.use_latent_attention:
+            # multi-head latent attention
+            # Project queries to latent space: (B, nh, T, d) x (nh, L, d) -> (B, nh, T, L)
+            q_latent = torch.einsum('bnti,nli->bntl', q, self.latent_k)
+            q_latent = q_latent / math.sqrt(head_dim)
+            
+            # causal mask to attention scores
+            causal_mask = torch.triu(torch.ones(T, self.latent_size, device=x.device), diagonal=1).bool()
+            q_latent = q_latent.masked_fill(causal_mask.unsqueeze(0).unsqueeze(0), float('-inf'))
+            
+            # softmax to get attention weights
+            attn_weights = F.softmax(q_latent, dim=-1)
+            attn_weights = self.attn_dropout(attn_weights)
+            
+            # Apply attention to latent values
+            y = torch.einsum('bntl,nlj->bntj', attn_weights, self.latent_v)
         else:
             # manual attention with dropout
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
