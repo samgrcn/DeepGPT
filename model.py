@@ -85,7 +85,9 @@ class CausalSelfAttention(nn.Module):
             self.head_dim = self.n_embd // self.n_head
             # Precompute rotary embeddings (cos and sin)
             cos, sin = precompute_freqs_cis(self.head_dim, self.max_seq_len, self.rope_theta)
-            self.register_buffer("rope_freqs", (cos, sin))
+            # Register cos and sin as separate buffers
+            self.register_buffer("rope_cos", cos)
+            self.register_buffer("rope_sin", sin)
         
         if self.use_latent_attention:
             # Latent projections for keys and values
@@ -111,7 +113,8 @@ class CausalSelfAttention(nn.Module):
         # Apply rotary position embeddings if enabled
         if self.use_rope:
             # Get the current subset of the precomputed freqs
-            cos, sin = self.rope_freqs
+            cos = self.rope_cos[:T]  # Only use the needed sequence length
+            sin = self.rope_sin[:T]  # Only use the needed sequence length
             # Apply rotary embeddings
             q, k = apply_rotary_emb(q, k, cos, sin)
 
