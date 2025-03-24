@@ -11,7 +11,7 @@ An efficient implementation of GPT-2 in PyTorch with modern optimizations:
 
 - Multiple model sizes supported:
   - Tiny (1M parameters) - for testing
-  - Small (124M parameters) - GPT-2 small
+  - Small (126M parameters) - GPT-2 small
   - Medium (350M parameters) - GPT-2 medium
   - Large (800M parameters) - Custom size
   - XL (1.5B parameters) - Custom size
@@ -35,6 +35,13 @@ This implementation includes several advanced optimizations from the DeepSeek pa
 - More efficient implementation with fewer parameters
 
 These optimizations are enabled by default and can be configured in `config.py`.
+
+## Installing the repo
+
+```bash
+git clone https://github.com/samgrcn/DeepGPT
+cd DeepGPT/
+```
 
 ## Requirements
 

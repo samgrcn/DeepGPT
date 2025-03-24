@@ -9,6 +9,9 @@ from model import GPT
 from config import GPTConfig
 from tqdm import tqdm
 
+# Enable TensorFloat32 for better performance on Ampere and newer GPUs
+torch.set_float32_matmul_precision('high')
+
 def get_lr(it, config):
     # 1) linear warmup for warmup_iters steps
     if it < config.warmup_tokens:
@@ -75,7 +78,8 @@ def main():
     # Compile model if requested and available
     if config.use_compile and device == 'cuda':
         print("Compiling model...")
-        model = torch.compile(model)
+        # Use 'reduce-overhead' mode to better handle complex operations
+        model = torch.compile(model, mode="reduce-overhead", fullgraph=False)
     
     # optimizer
     optimizer = torch.optim.AdamW(

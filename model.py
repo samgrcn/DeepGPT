@@ -3,35 +3,54 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# Rotary Position Embeddings implementation
+# Rotary Position Embeddings implementation optimized for torch.compile
 def precompute_freqs_cis(dim, end, theta=10000.0):
     """
     Precomputes the frequency tensor for complex exponentials (cosine and sine)
     with given dimension and maximum sequence length.
     """
+    # This implementation avoids complex number operations directly
+    # Implementation based on the official Llama 2 code
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
     t = torch.arange(end, device=freqs.device)
     freqs = torch.outer(t, freqs)
-    freqs_cis = torch.polar(torch.ones_like(freqs), freqs)  # complex64
-    return freqs_cis
-
-def apply_rotary_emb(xq, xk, freqs_cis):
-    """
-    Applies rotary embeddings to the query and key tensors.
-    """
-    xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
-    xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
     
-    # Reshape freqs_cis to match xq_
-    freqs_cis = freqs_cis.unsqueeze(0).unsqueeze(0)
-    if xq_.dim() == 4:  # (B, nh, T, D//2)
-        freqs_cis = freqs_cis.unsqueeze(1)
+    # Compute cos and sin directly instead of using complex numbers
+    cos = torch.cos(freqs)
+    sin = torch.sin(freqs)
+    return cos, sin
+
+def apply_rotary_emb(xq, xk, cos, sin):
+    """
+    Applies rotary embeddings to the query and key tensors using
+    real-valued operations to avoid complex number handling.
+    """
+    # Get dimensions
+    *shape, dim = xq.shape
+    # Make sure dim is even (required for rotary embeddings)
+    assert dim % 2 == 0, "Dimension must be even for rotary embeddings"
+    
+    # Reshape to access pairs of features
+    xq = xq.view(*shape, dim // 2, 2)
+    xk = xk.view(*shape, dim // 2, 2)
+    
+    # Expand dimensions of cos and sin to match q and k
+    cos = cos[:xq.size(-3)].unsqueeze(0).unsqueeze(0)  # Add batch and head dims
+    sin = sin[:xq.size(-3)].unsqueeze(0).unsqueeze(0)
     
     # Apply rotation
-    xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(-2)
-    xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(-2)
+    # For each feature pair (x, y), compute (-y, x) * sin + (x, y) * cos
+    x_rot_q = (xq[..., 0] * cos - xq[..., 1] * sin).unsqueeze(-1)
+    y_rot_q = (xq[..., 1] * cos + xq[..., 0] * sin).unsqueeze(-1)
     
-    return xq_out.type_as(xq), xk_out.type_as(xk)
+    x_rot_k = (xk[..., 0] * cos - xk[..., 1] * sin).unsqueeze(-1)
+    y_rot_k = (xk[..., 1] * cos + xk[..., 0] * sin).unsqueeze(-1)
+    
+    # Concatenate rotated features
+    xq_out = torch.cat([x_rot_q, y_rot_q], dim=-1).view(*shape, dim)
+    xk_out = torch.cat([x_rot_k, y_rot_k], dim=-1).view(*shape, dim)
+    
+    return xq_out, xk_out
 
 class CausalSelfAttention(nn.Module):
     def __init__(self, config):
@@ -64,11 +83,9 @@ class CausalSelfAttention(nn.Module):
             self.rope_theta = getattr(config, 'rope_theta', 10000.0)
             self.max_seq_len = config.block_size
             self.head_dim = self.n_embd // self.n_head
-            # Precompute rotary embeddings
-            self.register_buffer(
-                "rope_freqs", 
-                precompute_freqs_cis(self.head_dim, self.max_seq_len, self.rope_theta)
-            )
+            # Precompute rotary embeddings (cos and sin)
+            cos, sin = precompute_freqs_cis(self.head_dim, self.max_seq_len, self.rope_theta)
+            self.register_buffer("rope_freqs", (cos, sin))
         
         if self.use_latent_attention:
             # Latent projections for keys and values
@@ -94,9 +111,9 @@ class CausalSelfAttention(nn.Module):
         # Apply rotary position embeddings if enabled
         if self.use_rope:
             # Get the current subset of the precomputed freqs
-            freqs_cis = self.rope_freqs[:T]
+            cos, sin = self.rope_freqs
             # Apply rotary embeddings
-            q, k = apply_rotary_emb(q, k, freqs_cis)
+            q, k = apply_rotary_emb(q, k, cos, sin)
 
         if self.use_flash_attention and hasattr(F, 'scaled_dot_product_attention'):
             # flash attention - much more memory efficient
